@@ -1,0 +1,77 @@
+Роль: DBA / Системный архитектор
+Задача: Построить ER-диаграмму на основе BRD и исправленной Sequence-диаграммы.
+Контекст: Разделение статусов критично для согласованности с Sequence.
+Payment.status: [active, completed, failed, cancelled] — ЖЦ автоплатежа.Transaction.status: [pending, completed, failed] — ЖЦ конкретной транзакции списания.
+Формат вывода: dbdiagram.io
+
+
+// ER-диаграмма для TryHouse (Агрегатор платежей)
+
+Table users {
+  id bigint [pk, increment]
+  name varchar(255)
+  email varchar(255) [unique]
+  phone varchar(20)
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+Table payment_providers {
+  id bigint [pk, increment]
+  name varchar(255)
+  api_endpoint varchar(512)
+  api_key varchar(512)
+  is_active boolean [default: true]
+  created_at timestamp [default: `now()`]
+}
+
+Table bank_accounts {
+  id bigint [pk, increment]
+  user_id bigint [ref: > users.id]
+  bank_name varchar(255)
+  account_number varchar(50)
+  currency varchar(3)
+  balance decimal(15, 2)
+  is_default boolean [default: false]
+  created_at timestamp [default: `now()`]
+}
+
+Table payments {
+  id bigint [pk, increment]
+  user_id bigint [ref: > users.id]
+  provider_id bigint [ref: > payment_providers.id]
+  bank_account_id bigint [ref: > bank_accounts.id]
+  amount decimal(15, 2)
+  currency varchar(3)
+  due_date timestamp
+  status varchar(20)
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+Table transactions {
+  id bigint [pk, increment]
+  payment_id bigint [ref: > payments.id]
+  amount decimal(15, 2)
+  commission_type varchar(20)
+  commission_value decimal(15, 2)
+  total_amount decimal(15, 2)
+  status varchar(20)
+  bank_response varchar(512)
+  provider_response varchar(512)
+  retry_count int [default: 0]
+  created_at timestamp [default: `now()`]
+  updated_at timestamp [default: `now()`]
+}
+
+Table notifications {
+  id bigint [pk, increment]
+  user_id bigint [ref: > users.id]
+  transaction_id bigint [ref: > transactions.id, null]
+  payment_id bigint [ref: > payments.id, null]
+  type varchar(50)
+  message text
+  status varchar(20)
+  sent_at timestamp [default: `now()`]
+}
+
