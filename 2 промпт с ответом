@@ -1,0 +1,103 @@
+Роль: Системный архитектор / ИнтеграторЗадача: Создать Sequence-диаграмму для сценария "Автоматическое списание регулярного платежа" на основе BRD.Контекст:
+
+Инициатор: Scheduler (внутренний сервис TryHouse), а не User. Пользователь настраивает автоплатёж заранее, а запускает его система.
+Участники: Scheduler, TryHouse API, Bank API, Service Provider API, Notification Service, Database (PostgreSQL).
+Ограничения: Время ответа банка < 2 сек. Ретрай при ошибке: 3 попытки.
+Ключевая логика: Подтверждение оплаты поставщику (Service Provider API) происходит ТОЛЬКО после успешного списания средств банком. Если банк возвращает ошибку или недостаточно средств, поток прерывается на шаге уведомления пользователя.
+Статуса: Использовать Transaction.status для попытки списания и Payment.status для общего состояния автоплатежа.Формат вывода: PlantUML
+
+
+@startuml
+title Автоматическое списание регулярного платежа
+
+participant Scheduler as "Scheduler\n(Автоплатёж)"
+participant TryHouseAPI as "TryHouse API"
+participant BankAPI as "Bank API\n(Райффайзен/Альфа/Газпромбанк)"
+participant ServiceProviderAPI as "Service Provider API"
+participant NotificationService as "Notification Service"
+participant Database as "Database\n(PostgreSQL)"
+
+autonumber
+
+' 1. Инициация процесса по расписанию
+Scheduler -> TryHouseAPI: Запуск обработки регулярного платежа
+
+' 2. Поиск активного платежа в БД
+TryHouseAPI -> Database: Найти активный Payment по user_id и due_date <= now()
+Database --> TryHouseAPI: Return Payment {id, user_id, amount, currency}
+
+alt Платёж найден?
+    ' 4. Создание транзакции в статусе PENDING
+    TryHouseAPI -> Database: Создать Transaction {status=pending}
+    Database --> TryHouseAPI: Return Transaction.id
+
+    ' 6. Запрос на списание средств в банк
+    TryHouseAPI -> BankAPI: Запрос на списание средств (amount + комиссия)
+
+    alt Банк одобрил?
+        BankAPI --> TryHouseAPI: Ответ: "Success"
+        ' 8. Успех: Обновляем статус транзакции
+        TryHouseAPI -> Database: Update Transaction {status=completed}
+        Database --> TryHouseAPI: OK
+
+        ' 10. Подтверждение оплаты поставщику (ТОЛЬКО если деньги списаны!)
+        TryHouseAPI -> ServiceProviderAPI: Подтвердить оплату поставщику
+        ServiceProviderAPI --> TryHouseAPI: Ответ: "Success"
+
+        ' 12. Успех: Обновляем статус платежа и уведомляем пользователя
+        TryHouseAPI -> Database: Update Payment {status=completed}
+        Database --> TryHouseAPI: OK
+
+        TryHouseAPI -> NotificationService: Уведомить об успехе
+        NotificationService --> User: SMS/Email Success
+
+    else Ошибка банка или недостаточно средств?
+        alt Недостаточно средств?
+            BankAPI --> TryHouseAPI: Ответ: "Insufficient Funds"
+            ' 17. Обновляем статус транзакции на FAILED
+            TryHouseAPI -> Database: Update Transaction {status=failed}
+            Database --> TryHouseAPI: OK
+
+            ' Уведомление пользователя о нехватке средств
+            TryHouseAPI -> NotificationService: Уведомить о неудаче (недостаточно средств)
+            NotificationService --> User: SMS/Email Failed (Недостаточно средств)
+
+            ' Обновляем статус платежа на FAILED
+            TryHouseAPI -> Database: Update Payment {status=failed}
+            Database --> TryHouseAPI: OK
+
+        else Ошибка банка (техническая)?
+            loop Ретрай при ошибке банка (до 3 раз)
+                BankAPI --> TryHouseAPI: Ответ: "Error" / Таймаут >2 сек
+      
+                TryHouseAPI -> BankAPI:Повторный запрос на списание
+            end
+
+            alt Все попытки неудачны?
+                BankAPI --> TryHouseAPI: Ответ: "Error" 
+                ' Обновляем статус транзакции на FAILED после неудачных попыток
+                TryHouseAPI -> Database: Update Transaction {status=failed}
+                Database --> TryHouseAPI: OK
+
+                ' Уведомление пользователя о технической ошибке
+                TryHouseAPI -> NotificationService: Уведомить о технической ошибке
+                NotificationService --> User: SMS/Email Failed (Ошибка банка)
+
+                ' Обновляем статус платежа на FAILED
+                TryHouseAPI -> Database: Update Payment {status=failed}
+                Database --> TryHouseAPI: OK
+
+end
+
+' Логика для случая, если поставщик не подтвердил оплату (после успешного списания)
+alt Ошибка подтверждения поставщика?
+    ServiceProviderAPI --> TryHouseAPI: N+1. Ответ: "Error"
+    TryHouseAPI -> NotificationService: N+2. Уведомить о проблеме с поставщиком
+    NotificationService --> User: N+3. SMS/Email Failed (Ошибка поставщика)
+    ' Здесь должна быть логика возврата средств (Refund), которая не показана для простоты.
+end
+
+else Нет активных платежей?
+    Scheduler --> TryHouseAPI: N+4. Нет активных платежей для обработки сегодня
+end
+@enduml
