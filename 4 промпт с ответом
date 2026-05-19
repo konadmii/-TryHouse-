@@ -1,0 +1,334 @@
+Роль: Интегратор / Архитектор APIЗадача: Сформировать спецификацию OpenAPI 3.0 на основе BRD и диаграмм.Контекст: Использовать сущности из ER-диаграммы (Payment, Transaction). 
+
+Авторизация через JWT (Authorization header).Пагинация через query-параметры page и limit.Валидация схемы запроса .Формат вывода: OpenAPI YAML v3.0.x (совместимый с Swagger Editor).
+
+
+openapi: 3.0.3
+info:
+  title: TryHouse API - Агрегатор регулярных платежей
+  description: Единое окно для управления регулярными начислениями домохозяйств (ЖКУ, интернет, налоги). Интеграция с банками-партнёрами А3.
+  version: 1.0.0
+
+servers:
+  - url: https://api.tryhouse.ru/v1
+    description: Production API сервер
+
+components:
+  securitySchemes:
+    JWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+          example: VALIDATION_ERROR
+        message:
+          type: string
+          example: Неверный формат данных
+        details:
+          type: object
+          nullable: true
+
+    Payment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        provider_id:
+          type: string
+          format: uuid
+        bank_id:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          format: float
+          minimum: 0.01
+        currency:
+          type: string
+          enum: [RUB, USD, EUR]
+        status:
+          type: string
+          enum: [active, completed, failed, cancelled]
+        due_date:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        payment_id:
+          type: string
+          format: uuid
+        bank_transaction_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, completed, failed]
+        amount:
+          type: number
+          format: float
+        fee:
+          type: number
+          format: float
+        timestamp:
+          type: string
+          format: date-time
+
+    PaymentCreateRequest:
+      type: object
+      required:
+        - provider_id
+        - bank_id
+        - amount
+        - currency
+        - due_date
+      properties:
+        provider_id:
+          type: string
+          format: uuid
+        bank_id:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          format: float
+          minimum: 0.01
+        currency:
+          type: string
+          enum: [RUB, USD, EUR]
+        due_date:
+          type: string
+          format: date-time
+
+    PaymentListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Payment'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            total_pages:
+              type: integer
+
+    TransactionListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            total_pages:
+              type: integer
+
+paths:
+  /payments:
+    post:
+      summary: Создать регулярный платёж
+      tags:
+        - Платежи
+      security:
+        - JWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentCreateRequest'
+      responses:
+        '201':
+          description: Платёж успешно создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '400':
+          description: Ошибка валидации запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Неавторизованный доступ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      summary: Получить список регулярных платежей пользователя
+      tags:
+        - Платежи
+      security:
+        - JWT: []
+      parameters:
+        - name: page
+          in: query
+          description: Номер страницы
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Количество элементов на странице
+          required: false
+          schema:
+            type: integer
+            default: 20
+        - name: status
+          in: query
+          description: Фильтр по статусу автоплатежа
+          required: false
+          schema:
+            type: string
+            enum: [active, completed, failed, cancelled]
+      responses:
+        '200':
+          description: Список платежей с пагинацией
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentListResponse'
+        '401':
+          description: Неавторизован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /payments/{id}:
+    get:
+      summary: Получить детали регулярного платежа по ID
+      tags:
+        - Платежи
+      security:
+        - JWT: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Детали платежа
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '404':
+          description: Платёж не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Неавторизован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /payments/{id}/cancel:
+    post:
+      summary: Отменить регулярный платёж (перевести в статус cancelled)
+      tags:
+        - Платежи
+      security:
+        - JWT: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Платёж отменён. Возвращает обновлённый объект платежа
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '404':
+          description: Платёж не найден или уже отменён/завершён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Конфликт состояний
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /transactions:
+    get:
+      summary: Получить историю транзакций списаний пользователя
+      tags:
+        - Транзакции
+      security:
+        - JWT: []
+      parameters:
+        - name: page
+          in: query
+          description: Номер страницы
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Лимит на странице
+          required: false
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: История транзакций с пагинацией
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionListResponse'
+        '401':
+          description: Неавторизован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
